@@ -1,61 +1,50 @@
-from flask import Flask, request, jsonify
-from binance.client import Client
-from config import BINANCE_API_KEY, BINANCE_API_SECRET
-import datetime
+import threading
+import time
+from config import TRADE_PERCENTAGE, POLL_INTERVAL
+from binance_handler import get_price, get_balance, buy_eth, sell_all_eth
 
-app = Flask(__name__)
-client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
+gaps = {}  # chiave = gap_base, valore = {"levels": set(), "active": True}
 
-def get_futures_balance_usdt():
-    try:
-        balances = client.futures_account_balance()
-        for b in balances:
-            if b['asset'] == 'USDT':
-                return float(b['balance'])
-    except Exception as e:
-        print(f"Errore nel recupero del saldo: {e}")
-        return None
+def track_prices():
+    while True:
+        price = get_price()
+        for gap_base_str in list(gaps.keys()):
+            gap_base = float(gap_base_str)
+            gap = gaps[gap_base_str]
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.json
-    now = datetime.datetime.now(datetime.UTC).isoformat()
+            if not gap["active"]:
+                continue
 
-    print("\n📩 Segnale ricevuto:")
-    print(f"🕒 {now}")
-    print(f"Asset: {data.get('asset')}")
-    print(f"TF: {data.get('timeframe')}")
-    print(f"Evento: {data.get('event')}")
-    print(f"TradingView time: {data.get('timestamp')}")
+            escursione = gap_base - price
+            if escursione >= 13 and 1 not in gap["levels"]:
+                _buy_level(gap_base_str, 1)
+            if escursione >= 15 and 2 not in gap["levels"]:
+                _buy_level(gap_base_str, 2)
+            if escursione >= 18 and 3 not in gap["levels"]:
+                _buy_level(gap_base_str, 3)
 
-    event = data.get("event")
-    if event not in ["gap_up", "gap_down", "gap_closed"]:
-        return jsonify({"status": "ignored", "reason": "evento non valido"})
+        time.sleep(POLL_INTERVAL)
 
-    if event == "gap_closed":
-        print("✅ CHIUSURA posizione (da implementare)")
-        return jsonify({"status": "ok", "message": "Gap chiuso"})
+def _buy_level(gap_base_str, level):
+    usdc = get_balance("USDC")
+    invest = usdc * TRADE_PERCENTAGE
+    buy_eth(invest)
+    gaps[gap_base_str]["levels"].add(level)
+    print(f"[GAP {gap_base_str}] Acquisto livello {level}")
 
- usdt_balance = get_futures_balance_usdt()
-    if usdt_balance is None:
-        return jsonify({"status": "errore", "message": "saldo non disponibile"})
+def handle_gap_down(gap_base):
+    gap_base_str = str(gap_base)
+    if gap_base_str not in gaps:
+        gaps[gap_base_str] = {"levels": set(), "active": True}
+        print(f"[GAP_DOWN] Gap registrato a {gap_base}")
+    else:
+        print(f"[GAP_DOWN] Gap già presente a {gap_base}")
 
-    investment = usdt_balance * 0.04  # 4%
-    symbol = "ETHUSDT"
-    side = Client.SIDE_SELL if event == "gap_up" else Client.SIDE_BUY
-
-    try:
-        order = client.futures_create_order(
-            symbol=symbol,
-            side=side,
-            type=Client.ORDER_TYPE_MARKET,
-            quantity=round(investment / client.futures_symbol_ticker(symbol=symbol)['price'], 3)
-        )
-        print(f"📤 Ordine inviato: {side} {symbol} con {investment:.2f} USDT")
-        return jsonify({"status": "success", "order": order})
-    except Exception as e:
-        print(f"❌ Errore nell'invio dell'ordine: {e}")
-        return jsonify({"status": "errore", "message": str(e)})
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+def handle_gap_closed(gap_base):
+    gap_base_str = str(gap_base)
+    if gap_base_str in gaps and gaps[gap_base_str]["active"]:
+        sell_all_eth()
+        gaps[gap_base_str]["active"] = False
+        print(f"[GAP_CLOSED] Gap chiuso a {gap_base}")
+    else:
+        print(f"[GAP_CLOSED] Nessun gap attivo a {gap_base}")
