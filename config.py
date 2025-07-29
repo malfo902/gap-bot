@@ -11,9 +11,6 @@ BASE_ASSET = "ETH"
 # Percentuale di investimento per ogni livello (es: 4% del saldo USDC disponibile)
 TRADE_PERCENTAGE = 0.04
 
-# Sicurezza e webhook
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-
 # Frequenza del controllo prezzo (in secondi)
 POLL_INTERVAL = 10
 
